@@ -32,6 +32,12 @@ build/
 ### VS Code ###
 .vscode/
 
+# Secrets and Environment Variables
+.env
+.env.local
+*.pem
+*.key
+*.secret
 
 .agents
 .venv

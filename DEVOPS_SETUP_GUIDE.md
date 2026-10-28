@@ -27,7 +27,7 @@ flowchart TD
         ECR -->|Pull Image| STACK
         
         subgraph Docker Bridge Network
-            APP["spring-app (Spring Boot :8080)"]
+            APP["spring-app (Spring Boot :8081)"]
             DB[("mysqldb (MySQL 8.0 :3306)")]
             VOL[("Volume: mysql_data")]
             APP -->|jdbc:mysql://mysqldb:3306/studentdb| DB
@@ -35,6 +35,9 @@ flowchart TD
         end
     end
 ```
+
+> [!NOTE]
+> **Port Separation**: Jenkins runs on port **`8080`**, while the Spring Boot application runs on port **`8081`**. This prevents port collision when running both on the same EC2 instance!
 
 ---
 
@@ -46,41 +49,52 @@ flowchart TD
 3. Click **Create repository**:
    - Visibility: **Private**
    - Repository name: `spring-boot-app`
-4. Copy your repository URI (it will look like: `123456789012.dkr.ecr.us-east-1.amazonaws.com/spring-boot-app`).
-5. Ensure you have an IAM User with the policy **`AmazonEC2ContainerRegistryPowerUser`** or Administrator access. Keep the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+   - Tag immutability: **Mutable (Disabled)**
+4. Copy your repository URI (e.g. `524109816304.dkr.ecr.eu-north-1.amazonaws.com/spring-boot-app`).
+5. Ensure you have an IAM User with the policy **`AmazonEC2ContainerRegistryPowerUser`**. Keep your `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 
 ---
 
 ### Step 2: EC2 Instance Provisioning
-1. Launch an **Ubuntu 24.04 / 22.04 LTS** EC2 instance (`t3.medium` recommended for Jenkins + Docker).
+1. Launch an **Ubuntu 24.04 LTS** EC2 instance (`t3.micro` Free Tier).
 2. Configure **Security Group** inbound rules:
    | Type | Port | Source | Description |
    | :--- | :--- | :--- | :--- |
-   | **SSH** | 22 | My IP (or 0.0.0.0/0) | Remote access |
-   | **Custom TCP** | 8080 | 0.0.0.0/0 | Jenkins Dashboard & App port |
-   | **Custom TCP** | 3306 | Optional / Private | MySQL direct access (optional) |
-3. Save your `.pem` key pair (e.g., `ec2-key.pem`).
+   | **SSH** | `22` | `0.0.0.0/0` | Remote SSH terminal access |
+   | **Custom TCP** | `8080` | `0.0.0.0/0` | Jenkins Dashboard & GitHub Webhook |
+   | **Custom TCP** | `8081` | `0.0.0.0/0` | Spring Boot REST API Endpoint |
+   | **Custom TCP** | `3306` | Optional / My IP | MySQL direct access (optional) |
+3. Storage: **25–30 GiB gp3** (Free Tier eligible).
+4. Key pair: Download `ec2-ssh-key.pem`.
 
 ---
 
-### Step 3: Configure EC2 with Docker & Jenkins
+### Step 3: Configure EC2 with Swap, Docker & Jenkins
 
-SSH into your EC2 instance:
-```bash
-ssh -i ec2-key.pem ubuntu@<EC2_PUBLIC_IP>
+SSH into your EC2 instance from PowerShell:
+```powershell
+ssh -i ec2-ssh-key.pem ubuntu@<EC2_PUBLIC_IP>
 ```
 
-#### 1. Install Docker & Docker Compose:
+#### 1. Add 4 GB Swap Memory (Crucial for `t3.micro`):
+```bash
+sudo fallocate -l 4G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+#### 2. Install Docker, Docker Compose, and AWS CLI:
 ```bash
 sudo apt update -y
-sudo apt install -y docker.io docker-compose-v2 awscli
+sudo apt install -y docker.io docker-compose-v2
+sudo snap install aws-cli --classic
+sudo systemctl enable --now docker
 sudo usermod -aG docker ubuntu
-sudo usermod -aG docker jenkins 2>/dev/null || true
-newgrp docker
 ```
 
-#### 2. Run Jenkins in Docker (with Docker socket mounted):
-Run this command to start Jenkins with direct access to Docker:
+#### 3. Run Jenkins in Docker (with Docker socket mounted):
 ```bash
 sudo docker run -d \
   --name jenkins \
@@ -98,13 +112,20 @@ Get your initial Jenkins administrator password:
 sudo docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
 ```
 
+#### 4. Copy your `.env` file to EC2 (from your local laptop):
+From PowerShell on your laptop in `D:\spring-boot-cicd`:
+```powershell
+ssh -i ec2-ssh-key.pem ubuntu@<EC2_PUBLIC_IP> "mkdir -p /home/ubuntu/app"
+scp -i ec2-ssh-key.pem .env ubuntu@<EC2_PUBLIC_IP>:/home/ubuntu/app/.env
+```
+
 ---
 
 ### Step 4: Configure Jenkins Dashboard
 
 1. Open your browser: `http://<EC2_PUBLIC_IP>:8080`.
-2. Enter the password retrieved above and select **Install suggested plugins**.
-3. Install the required Jenkins plugins under **Manage Jenkins** $\rightarrow$ **Plugins** $\rightarrow$ **Available Plugins**:
+2. Enter the administrator password retrieved above and select **Install suggested plugins**.
+3. Install required plugins under **Manage Jenkins** $\rightarrow$ **Plugins** $\rightarrow$ **Available Plugins**:
    - **Docker Pipeline**
    - **CloudBees AWS Credentials**
    - **SSH Agent Plugin**
@@ -119,7 +140,7 @@ sudo docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
      - Kind: **SSH Username with private key**
      - ID: `ec2-ssh-key`
      - Username: `ubuntu`
-     - Private Key: Paste the full text of your `ec2-key.pem` file.
+     - Private Key: Paste the full text of your `ec2-ssh-key.pem` file.
 
 ---
 
@@ -129,7 +150,7 @@ sudo docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
 2. **Payload URL**: `http://<EC2_PUBLIC_IP>:8080/github-webhook/`
 3. **Content type**: `application/json`
 4. Which events would you like to trigger this webhook? Select **Just the push event**.
-5. Click **Add webhook**. (GitHub will show a green checkmark).
+5. Click **Add webhook**.
 
 ---
 
@@ -143,7 +164,7 @@ sudo docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
    - Definition: **Pipeline script from SCM**
    - SCM: **Git**
    - Repository URL: `https://github.com/<your-username>/<your-repo>.git`
-   - Branch Specifier: `*/main` (or `*/master`)
+   - Branch Specifier: `*/master` (or `*/main`)
    - Script Path: `Jenkinsfile`
 5. Click **Save**.
 
@@ -152,14 +173,14 @@ sudo docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
 ## 3. End-to-End Verification & Testing
 
 ### 1. Test Initial App Deployment
-Once the first build runs successfully, check the running services on EC2:
+Once the first build runs successfully, check running containers on EC2:
 ```bash
 docker compose -f /home/ubuntu/app/docker-compose.yml ps
 ```
 
 Test the home status endpoint:
 ```bash
-curl http://<EC2_PUBLIC_IP>:8080/
+curl http://<EC2_PUBLIC_IP>:8081/
 ```
 Expected Output:
 ```json
@@ -176,14 +197,14 @@ Expected Output:
 ### 2. Test MySQL Persistence (Student CRUD)
 Insert a student record into MySQL:
 ```bash
-curl -X POST http://<EC2_PUBLIC_IP>:8080/api/students \
+curl -X POST http://<EC2_PUBLIC_IP>:8081/api/students \
   -H "Content-Type: application/json" \
   -d '{"name": "Alice Johnson", "email": "alice@gmail.com", "course": "Computer Science"}'
 ```
 
 Retrieve all students:
 ```bash
-curl http://<EC2_PUBLIC_IP>:8080/api/students
+curl http://<EC2_PUBLIC_IP>:8081/api/students
 ```
 Expected response:
 ```json
@@ -198,14 +219,14 @@ Expected response:
 ```
 
 ### 3. Verify Zero-Data-Loss Automated CI/CD
-1. Edit `HelloController.java` or `Student.java` (e.g., change the status message to `"Version 2.0 Live!"`).
+1. Edit `HelloController.java` (e.g., change the status message to `"Version 2.0 Live!"`).
 2. Commit and push:
    ```bash
    git add .
    git commit -m "feat: release version 2.0"
-   git push origin main
+   git push origin master
    ```
 3. Watch Jenkins trigger immediately via the GitHub Webhook, build the new image, push to ECR, and update the EC2 container.
-4. Run `curl http://<EC2_PUBLIC_IP>:8080/api/students`:
+4. Run `curl http://<EC2_PUBLIC_IP>:8081/api/students`:
    * **Alice Johnson is still in the database!**
    * This proves your persistent volume (`mysql_data:/var/lib/mysql`) and CI/CD workflow are 100% production-ready.
