@@ -2,14 +2,13 @@ pipeline {
     agent any
 
     environment {
-        // Safe default placeholders (Overridden dynamically by .env or Jenkins Global Environment)
-        AWS_REGION     = 'us-east-1'
-        AWS_ACCOUNT_ID = '123456789012'
+        AWS_REGION     = 'eu-north-1'
+        AWS_ACCOUNT_ID = '524109816304'
         REPO_NAME      = 'spring-boot-app'
         IMAGE_TAG      = "${BUILD_NUMBER}"
         AWS_CRED_ID    = 'aws-credentials'
         EC2_SSH_CRED   = 'ec2-ssh-key'
-        EC2_HOST       = 'ubuntu@<EC2_PUBLIC_IP>'
+        EC2_HOST       = 'ubuntu@51.20.69.194'
         APP_PORT       = '8081'
     }
 
